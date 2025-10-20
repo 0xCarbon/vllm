@@ -389,6 +389,18 @@ async def get_server_load_metrics(request: Request):
 @router.get("/ping", response_class=Response)
 @router.post("/ping", response_class=Response)
 async def ping(raw_request: Request) -> Response:
+    """Ping check. Endpoint required for SageMaker and RunPod.
+    
+    Returns:
+        - 200: Service is healthy and ready
+        - 204: Service is initializing
+        - 503: Service is unhealthy
+    """
+    # Check if service is still initializing (RunPod requirement)
+    if not getattr(raw_request.app.state, 'is_ready', True):
+        return Response(status_code=204)
+    
+    # Otherwise, check engine health
     """Ping check. Endpoint required for SageMaker"""
     return await health(raw_request)
 
@@ -1519,6 +1531,10 @@ def build_app(args: Namespace) -> FastAPI:
         app = FastAPI(lifespan=lifespan)
     app.include_router(router)
     app.root_path = args.root_path
+    
+    # Initialize as not ready for RunPod health checks
+    # This will be set to True after full initialization in init_app_state()
+    app.state.is_ready = False
 
     mount_metrics(app)
 
@@ -1615,6 +1631,9 @@ async def init_app_state(
     state: State,
     args: Namespace,
 ) -> None:
+    # Mark as not ready during initialization (for RunPod health checks)
+    state.is_ready = False
+    
     vllm_config = engine_client.vllm_config
 
     if args.served_model_name is not None:
@@ -1840,6 +1859,10 @@ async def init_app_state(
 
     state.enable_server_load_tracking = args.enable_server_load_tracking
     state.server_load_metrics = 0
+    
+    # Mark as ready after initialization is complete (for RunPod health checks)
+    state.is_ready = True
+    logger.info("Server initialization complete, now accepting requests")
 
 
 def create_server_socket(addr: tuple[str, int]) -> socket.socket:
